@@ -1,0 +1,14 @@
+AppliedPredictiveModeling
+base
+caret
+foreach
+Formula
+ggplot2
+Hmisc
+knitr
+lattice
+randomForest
+rattle
+rpart
+rpart.plot
+survival

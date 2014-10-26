@@ -1,0 +1,198 @@
+## Practical Machine Learning - Prediction Project
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+The study given in the article above, there are six participants participated in a dumbell lifting exercise five different ways. The five ways, as described in the study, were “exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.”
+
+The goal of this project is to predict the manner in which they did the exercise.
+
+The “Components of a Predictor” consists of five stages:
+
+* Question
+* Input Data
+* Features
+* Algorithm
+* Parameters
+* Evaluation
+
+## Question
+
+By processing data gathered from accelerometers on the belt, forearm, arm, and dumbell of the participants in a machine learning algorithm, the question is how can we predict appropriate activity quality (class A-E) ?
+
+## Input Data
+First, I'll load the appropriate packages and set the seed for reproduceable results.
+```{r,cache=TRUE}
+library(AppliedPredictiveModeling)
+library(caret)
+library(rattle)
+library(rpart.plot)
+library(randomForest)
+library(ggplot2)
+set.seed(137)
+
+```
+
+First, I download the data if not given in the working directory. While loading the datasets I treat empty values as NA. Then I verify that the training and testing data are identical.
+
+```{r,cache=TRUE}
+training_file <- "pml-training.csv"
+if (!file.exists(training_file)){
+dataUrl_training <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url=dataUrl_training, training_file, method="curl")
+}
+testing_file <- "pml-testing.csv"
+if (!file.exists(testing_file)){
+dataUrl_testing <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url=dataUrl_testing, testing_file, method="curl")  
+}
+training_data <- read.csv(training_file, na.strings=c("NA",""), header=TRUE )
+eval_data <- read.csv(testing_file, na.strings=c("NA",""), header=TRUE )
+training_var <- colnames(training_data)
+testing_var <- colnames(eval_data)
+# Verify that the column names (excluding classe and problem_id) are identical in the training and # test set.
+all.equal(training_var[1:length(training_var)-1], testing_var[1:length(testing_var)-1])
+dim(training_data)
+```
+
+The training data consists of `r dim(training_data)[2]` variables, but many of the variables are sparse, meaning that they only have observations for a few of the data points. These sparse variables may have predictive value, but because they are observed so infrequently they become fairly useless for classifying most of the data points that do not contain these observations. Therefore it makes sense to filter these inputs out and focus the prediction efforts on variables that have at least 90% of their observations filled in.
+
+## Feature
+I remove variables with more than 90% missing values. 
+```{r,cache=TRUE}
+nav <- sapply(colnames(training_data), function(x) if(sum(is.na(training_data[, x])) > 0.9*nrow(training_data)){return(T)}else{return(F)})
+training_data <- training_data[, !nav]
+names(training_data)
+```
+There were a lots of missing data. Now the training data contains only `r dim(training_data)[2]` variables. Let's also remove user name, timestamps and windows as they are unnecessary for predicting.
+```{r, cache=TRUE}
+training_data <- training_data[,8:ncol(training_data)]
+names(training_data)
+```
+
+In the context of covariate creation strategies, first check for covariates that have virtually on variablility. Depending on that we may have to create new covariates from the given variables.
+
+```{r, cache=TRUE}
+nsv <- nearZeroVar(training_data, saveMetrics = T)
+training_data <- training_data[, !nsv$nzv]
+nsv
+```
+Given that all of the near zero variance variables (nzv) are FALSE, there's no need to eliminate any covariates due to lack of variablility.
+
+## Algorithm
+The training set has `r nrow(training_data)` samples and `r ncol(training_data) - 1` potential predictors after filtering.
+
+As we have a large training set (`r nrow(training_data)[1] ` entries) and a small evaluation set (`r nrow(eval_data)[1]` entries), instead of performing the algorithm on the entire training set, as it would be time consuming and wouldn't allow for an attempt on a testing set, I chose it to split into a training (comprising 60% of the entries) and a testing set (comprising 40% of the entries).
+
+
+```{r,cache=TRUE}
+# Divide entire training set into training (60%) and test (40%) sets.
+set.seed(137)
+inTrain <- createDataPartition(y=training_data$classe, p=0.6, list=FALSE)
+training <- training_data[inTrain,]
+testing <- training_data[-inTrain,]
+featurePlot(x = training[, 1:5], y = training$classe, plot = "pairs")
+qplot(roll_belt, pitch_belt, data = training, colour = classe)
+```
+
+We will choose two different algorithms via the caret package: classification trees (method = rpart) and random forests (method = rf). First I will try fresh classification trees and then introduce preprocessing and cross validation.
+
+## Evaluation
+
+### Classification Trees
+
+```{r, cache=TRUE}
+# Train the classification trees on the training set.
+set.seed(137)
+modFit <- train(training$classe ~ ., data = training, method="rpart")
+print(modFit, digits=3)
+print(modFit$finalModel, digits=3)
+
+# Run against testing set.
+predictions <- predict(modFit, newdata=testing)
+cm <- confusionMatrix(predictions, testing$classe)
+print(cm, digits=4)
+```
+
+The accuracy rate is very low (`r cm$overall[[1]]`), let's try to improve it by incorporating preprocessing and/or cross validation.
+
+
+```{r,cache=TRUE}
+set.seed(137)
+modFit <- train(training$classe ~ .,  preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4), data = training, method="rpart")
+print(modFit, digits=3)
+# Run against testing with both preprocessings and 4-fold cross validations.
+fancyRpartPlot(modFit$finalModel, main="The Decision Tree")
+predictions <- predict(modFit, newdata=testing)
+cm2 <- confusionMatrix(predictions, testing$classe)
+print(cm2, digits=4)
+```
+
+When we run against the corresponding testing set, the accuracy rate is identical (`r cm2$overall[[1]]`) before and after 
+the preprocessing/cross validation steps.
+
+### Random Forest
+
+In the random forest algorithm, first we will use cross validation to sub sample the data and test it over 4 cross validation sets.
+
+```{r, cache=TRUE}
+# Train on training set with only cross validation.
+set.seed(137)
+modFit <- train(training$classe ~ ., method="rf", trControl=trainControl(method = "cv", number = 4), data=training)
+print(modFit, digits=3)
+# Run against testing set.
+predictions <- predict(modFit, newdata=testing)
+cm3 <- confusionMatrix(predictions, testing$classe)
+print(cm3, digits=4)
+
+# Run against 20 evaluation set.
+print(predict(modFit, newdata=eval_data))
+```
+
+The random forest algorithm generated a very accurate model with accuracy `r cm3$overall[[1]]`. Compared to the classification tree, this model generally has better performance in terms of accuracy as we see from the confusion matrix.
+
+```{r, cache=TRUE}
+set.seed(137)
+# Train on training set with both preprocessing and cross validation.
+modFit <- train(training$classe ~ ., method="rf", preProcess=c("center", "scale"), trControl=trainControl(method = "cv", number = 4), data=training)
+print(modFit, digits=3)
+# Run against testing set.
+predictions <- predict(modFit, newdata=testing)
+cm4 <- confusionMatrix(predictions, testing$classe)
+print(cm4, digits=4)
+```
+
+When running against the corresponding set, the accuracy rate rose from `r cm3$overall[[1]]` to `r cm4$overall[[1]]` with the addition of preprocessing. Thus I decided to apply random forest algorithm with both preprocessing and cross validation to the evaluation set.
+
+```{r}
+# Run against 20 evaluation set.
+result <- predict(modFit, newdata=eval_data)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(result)
+```
+
+### Out of Sample Error
+
+The out of sample error is the “error rate on new data set”. As reported by the final model of the Random Forest (preprocessing and cross validation) algorithm is `r 1-cm4$overall[[1]]` %.
+
+ ```{r}
+# parallel tree processing
+# library(doParallel)
+# library(foreach)
+# x <- training[1:ncol(training)-1]
+# y <- training$classe
+# 
+# rf <- foreach(ntree=rep(150, 6), .combine=randomForest::combine, .packages='randomForest') %dopar% {
+#   randomForest(x, y, ntree=ntree) 
+# }
+# 
+# predictions <- predict(rf, newdata=testing)
+# cm4 <- confusionMatrix(predictions, testing$classe)
+# print(cm4, digits=4)
+# ```
